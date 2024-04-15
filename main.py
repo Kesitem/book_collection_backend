@@ -1,41 +1,22 @@
 from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
+import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlmodel import SQLModel, Field, create_engine, Session, select
+from sqlmodel import Session, select
+
+from database import create_db_and_tables, engine, get_session
+from models.user import User, UserPublic, UserCreate
 
 # to get a string like this run:
 # openssl rand -hex 32
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-sqlite_file_name = "database.db"
-sqlite_url = f"sqlite:///{sqlite_file_name}"
-
-
-class UserBase(SQLModel):
-    username: str = Field(index=True)
-    email: str
-    full_name: str
-    disabled: bool
-
-
-class User(UserBase, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    hashed_password: str = Field()
-
-
-class UserCreate(UserBase):
-    password: str
-
-
-class UserPublic(UserBase):
-    id: int
 
 
 class Token(BaseModel):
@@ -45,19 +26,6 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     username: str | None = None
-
-
-connect_args = {"check_same_thread": False}
-engine = create_engine(sqlite_url, echo=True, connect_args=connect_args)
-
-
-def get_session():
-    with Session(engine) as session:
-        yield session
-
-
-def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -103,7 +71,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return encoded_jwt
 
 
-async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
+async def get_current_user(*, session: Session = Depends(get_session), token: Annotated[str, Depends(oauth2_scheme)]):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -117,7 +85,7 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    user = get_user(username=token_data.username)
+    user = get_user(session=session, username=token_data.username)
     if user is None:
         raise credentials_exception
     return user
@@ -154,7 +122,7 @@ async def login_for_access_token(*, session: Session = Depends(get_session),
     return Token(access_token=access_token, token_type="bearer")
 
 
-@app.get("/users/me/", response_model=User)
+@app.get("/users/me/", response_model=UserPublic)
 async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
 
@@ -175,3 +143,7 @@ async def read_own_items(
         current_user: Annotated[User, Depends(get_current_active_user)]
 ):
     return [{"item_id": "Foo", "owner": current_user.username}]
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, port=8000)
