@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from pydantic import BaseModel
+from sqlmodel import SQLModel, Field, create_engine, Session, select
 
 # to get a string like this run:
 # openssl rand -hex 32
@@ -13,16 +14,28 @@ SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
+sqlite_file_name = "database.db"
+sqlite_url = f"sqlite:///{sqlite_file_name}"
 
-fake_users_db = {
-    "johndoe": {
-        "username": "johndoe",
-        "full_name": "John Doe",
-        "email": "johndoe@example.com",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
-        "disabled": False,
-    }
-}
+
+class UserBase(SQLModel):
+    username: str = Field(index=True)
+    email: str
+    full_name: str
+    disabled: bool
+
+
+class User(UserBase, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    hashed_password: str = Field()
+
+
+class UserCreate(UserBase):
+    password: str
+
+
+class UserPublic(UserBase):
+    id: int
 
 
 class Token(BaseModel):
@@ -34,15 +47,17 @@ class TokenData(BaseModel):
     username: str | None = None
 
 
-class User(BaseModel):
-    username: str
-    email: str | None = None
-    full_name: str | None = None
-    disabled: bool | None = None
+connect_args = {"check_same_thread": False}
+engine = create_engine(sqlite_url, echo=True, connect_args=connect_args)
 
 
-class UserInDB(User):
-    hashed_password: str
+def get_session():
+    with Session(engine) as session:
+        yield session
+
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -60,14 +75,16 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
-def get_user(db, username: str):
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
+def get_user(*, session: Session = Depends(get_session), username: str):
+    statement = select(User).where(User.username == username)
+    user = session.exec(statement).one()
+    if not user:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    return user
 
 
-def authenticate_user(fake_db, username: str, password: str):
-    user = get_user(fake_db, username)
+def authenticate_user(*, session: Session = Depends(get_session), username: str, password: str):
+    user = get_user(session=session, username=username)
     if not user:
         return False
     if not verify_password(password, user.hashed_password):
@@ -100,25 +117,30 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
+    user = get_user(username=token_data.username)
     if user is None:
         raise credentials_exception
     return user
 
 
 async def get_current_active_user(
-    current_user: Annotated[User, Depends(get_current_user)]
+        current_user: Annotated[User, Depends(get_current_user)]
 ):
     if current_user.disabled:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
 
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+
+
 @app.post("/token")
-async def login_for_access_token(
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
-) -> Token:
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+async def login_for_access_token(*, session: Session = Depends(get_session),
+                                 form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
+                                 ) -> Token:
+    user = authenticate_user(session=session, username=form_data.username, password=form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -133,14 +155,23 @@ async def login_for_access_token(
 
 
 @app.get("/users/me/", response_model=User)
-async def read_users_me(
-    current_user: Annotated[User, Depends(get_current_active_user)]
-):
+async def read_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
     return current_user
+
+
+@app.post("/users/", response_model=UserPublic)
+def create_user(*, session: Session = Depends(get_session), user: UserCreate):
+    hashed_password = get_password_hash(user.password)
+    extra_data = {"hashed_password": hashed_password}
+    db_user = User.model_validate(user, update=extra_data)
+    session.add(db_user)
+    session.commit()
+    session.refresh(db_user)
+    return db_user
 
 
 @app.get("/users/me/items/")
 async def read_own_items(
-    current_user: Annotated[User, Depends(get_current_active_user)]
+        current_user: Annotated[User, Depends(get_current_active_user)]
 ):
     return [{"item_id": "Foo", "owner": current_user.username}]
