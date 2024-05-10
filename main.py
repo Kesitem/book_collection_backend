@@ -2,12 +2,13 @@ import uvicorn
 from fastapi import FastAPI
 
 from database import create_db_and_tables
-from routers import tokens, users
+from routers import tokens, users, books
 
 app = FastAPI()
 
 app.include_router(tokens.router)
 app.include_router(users.router)
+app.include_router(books.router)
 
 
 @app.on_event("startup")
