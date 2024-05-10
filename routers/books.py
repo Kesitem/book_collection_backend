@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from database import get_session
 from internal.security import get_current_active_user
-from models.book import BookPublic, Book, BookCreate, BookUpdate
+from models.book import BookPublic, Book, BookCreate, BookUpdate, BookPublicWithAuthors
 from models.user import User
 
 router = APIRouter(
@@ -31,7 +31,7 @@ def create_book(*, session: Session = Depends(get_session),
     return db_book
 
 
-@router.get("/{book_id}", response_model=BookPublic)
+@router.get("/{book_id}", response_model=BookPublicWithAuthors)
 def read_book(*, session: Session = Depends(get_session),
               current_user: Annotated[User, Depends(get_current_active_user)],
               book_id: int):

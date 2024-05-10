@@ -6,7 +6,13 @@ from sqlmodel import Session, select
 from database import get_session
 from internal.security import get_current_active_user
 from models.author import AuthorPublic, Author, AuthorCreate, AuthorUpdate
+from models.book import BookPublic
 from models.user import User
+
+
+class AuthorPublicWithBooks(AuthorPublic):
+    books: list[BookPublic] = []
+
 
 router = APIRouter(
     prefix="/authors",
@@ -31,7 +37,7 @@ def create_author(*, session: Session = Depends(get_session),
     return db_author
 
 
-@router.get("/{author_id}", response_model=AuthorPublic)
+@router.get("/{author_id}", response_model=AuthorPublicWithBooks)
 def read_author(*, session: Session = Depends(get_session),
                 current_user: Annotated[User, Depends(get_current_active_user)],
                 author_id: int):

@@ -14,7 +14,8 @@ def get_user(*, session: Session = Depends(get_session), username: str):
     """
     statement = select(User).where(User.username == username)
     try:
-        user = session.exec(statement).one()
+        results = session.exec(statement)
+        user = results.one()
     except:
         raise HTTPException(status_code=404, detail="Hero not found")
 
